@@ -1,0 +1,21 @@
+services:
+  rack-agent:
+    build: .
+    image: getcondor-rack-agent:latest
+    container_name: getcondor-rack-agent
+    restart: always
+    env_file:
+      - config/.env
+    volumes:
+      # Carpeta local donde ya caen fotos/videos/ortofotos (montada read-only)
+      - ${MEDIA_WATCH_DIR:-/media/shamrock/uploads}:/data/watch:ro
+      # Estado persistente (sqlite) para no re-subir archivos ya enviados
+      - agent-state:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  agent-state:
