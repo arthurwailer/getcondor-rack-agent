@@ -114,3 +114,21 @@ drone_id -- confirm the token in GetCondor's admin panel.
 Symptom: telemetry never uploads, no packets logged even in raw mode
 Likely cause: wrong TELEMETRY_UDP_PORT, or a firewall on the rack
 blocking that UDP port -- confirm with tcpdump on the rack.
+
+## Reassigning a rack to a different aircraft
+
+Racks get physically swapped between aircraft when there's a hardware
+issue. The aircraft identity (OSCAR01/02/03) never changes -- the rack
+just takes on whatever identity the aircraft it's currently installed
+in has. To move an already-configured rack to a different aircraft:
+
+nano config/.env
+(change DRONE_ID to the aircraft this rack is now installed in)
+docker compose up -d --build
+
+To also wipe the local upload-dedup history (so the rack doesn't
+"remember" files from the aircraft it used to serve):
+
+docker compose down
+docker volume rm getcondor-rack-agent_agent-state
+docker compose up -d --build
