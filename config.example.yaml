@@ -1,0 +1,16 @@
+# Agregar una aeronave/dron nuevo = copiar este archivo y rellenar estos
+# 6 campos. El código del agente NO cambia.
+
+drone_id: OSCAR01
+mission_org: shamrock
+mqtt_token: "REEMPLAZAR"
+api_url: https://getcondor.win
+poll_interval_seconds: 10
+
+watch_paths:
+  - path: /data/photos
+    media_type: photo
+  - path: /data/video
+    media_type: video
+  - path: /data/geotiff
+    media_type: geotiff
