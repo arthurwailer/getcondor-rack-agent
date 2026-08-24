@@ -22,7 +22,10 @@ def main() -> None:
 
     telemetry_enabled = os.getenv("TELEMETRY_ENABLED", "false").lower() == "true"
     if telemetry_enabled:
-        logger.info("telemetria habilitada (aun no implementada)")
+        import threading
+        from agent import telemetry_orchestrator
+        threading.Thread(target=telemetry_orchestrator.run, daemon=True).start()
+        logger.info("telemetria habilitada, corriendo en background")
 
     try:
         import watcher
