@@ -41,6 +41,7 @@ def _disk_free_gb(path: str) -> float:
 
 def _build_payload() -> dict:
     last_upload = state.get_last_upload_time()
+    by_type = state.get_last_upload_time_by_type()
     return {
         "drone_id": DRONE_ID,
         "token": MQTT_TOKEN,
@@ -49,6 +50,9 @@ def _build_payload() -> dict:
         "disk_free_gb": _disk_free_gb(os.getenv("MEDIA_WATCH_DIR", "/data/watch")),
         "last_upload_at": last_upload,
         "uploads_last_hour": state.count_uploaded_last_hour(),
+        "last_photo_at": by_type.get("PHOTO"),
+        "last_video_at": by_type.get("VIDEO"),
+        "last_geotiff_at": by_type.get("GEOTIFF_ZIP"),
     }
 
 

@@ -84,3 +84,16 @@ def count_uploaded_last_hour():
             "SELECT COUNT(*) FROM uploaded_files WHERE uploaded_at >= datetime('now', '-1 hour')"
         ).fetchone()
         return row[0] if row else 0
+
+
+def get_last_upload_time_by_type():
+    """Returns a dict {media_type: last_uploaded_at} for the most recent
+    successful upload of each type (PHOTO, VIDEO, GEOTIFF_ZIP). Missing
+    types are simply absent from the dict -- the heartbeat treats an
+    absent type as 'nothing of this type ever uploaded', not an error."""
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT media_type, MAX(uploaded_at) FROM uploaded_files GROUP BY media_type"
+        ).fetchall()
+        return {media_type: ts for media_type, ts in rows if ts}
