@@ -132,3 +132,36 @@ To also wipe the local upload-dedup history (so the rack doesn't
 docker compose down
 docker volume rm getcondor-rack-agent_agent-state
 docker compose up -d --build
+
+## Auto-start and auto-update on boot
+
+The aircraft powers the rack on and off daily, so the agent needs to
+start itself (and check for updates) every time the rack boots --
+nobody is going to SSH in each morning.
+
+1. Copy the systemd service file into place:
+
+sudo cp getcondor-rack-agent.service /etc/systemd/system/
+
+2. Edit the paths inside it if the repo isn't cloned at
+/opt/getcondor-rack-agent (adjust WorkingDirectory and ExecStart/ExecStop
+to match the real path).
+
+3. Enable and start it:
+
+sudo systemctl daemon-reload
+sudo systemctl enable getcondor-rack-agent.service
+sudo systemctl start getcondor-rack-agent.service
+
+4. Verify it's active:
+
+sudo systemctl status getcondor-rack-agent.service
+
+From now on, every time the rack boots, update-and-start.sh runs
+automatically: it does a best-effort git pull (skipped silently if
+there's no network yet or it takes longer than 30s), then starts the
+agent with whatever code is on disk. A missed update never blocks the
+aircraft from flying that day -- it just runs the previous version
+until the next successful boot-time check.
+
+Update log: tail -f update.log in the repo root.

@@ -1,0 +1,15 @@
+[Unit]
+Description=GetCondor rack agent (auto-update + start)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/getcondor-rack-agent
+ExecStart=/opt/getcondor-rack-agent/update-and-start.sh
+ExecStop=/usr/bin/docker compose -f /opt/getcondor-rack-agent/docker-compose.yml down
+
+[Install]
+WantedBy=multi-user.target
