@@ -71,9 +71,13 @@ config/.env is gitignored -- never commit real tokens.
 
 ## Known limitations (being addressed)
 
-- agent/geotiff.py currently rejects any GPS coordinate outside a
-  hardcoded Portugal mainland range -- needs to become configurable
-  before installing on a rack outside Portugal.
+- agent/geotiff.py is intentionally minimal today: it unzips the
+  archive, uploads the first .tif/.tiff it finds as media_type=GEOTIFF,
+  and relies entirely on GetCondor's server-side TiTiler processing to
+  derive geographic bounds on upload. It does not extract GPS, capture
+  time, or sensor type from the file itself, and does not validate
+  coordinates against any region -- there is currently no
+  Portugal-specific restriction to remove.
 - photo.py/video.py currently parse capture time via a filename
   regex tuned to Shamrock's naming convention (metaOSD.py). A rack
   with a different naming convention will silently fail to upload
