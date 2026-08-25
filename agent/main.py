@@ -20,6 +20,10 @@ def main() -> None:
     drone_id = os.getenv("DRONE_ID", "UNKNOWN")
     logger.info("getcondor-rack-agent arrancando para drone_id=%s", drone_id)
 
+    import threading
+    from agent import heartbeat
+    threading.Thread(target=heartbeat.run, daemon=True).start()
+
     telemetry_enabled = os.getenv("TELEMETRY_ENABLED", "false").lower() == "true"
     if telemetry_enabled:
         import threading

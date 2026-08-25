@@ -1,0 +1,70 @@
+"""
+Periodically pushes a small status ping to GetCondor -- uptime, disk
+space, last upload time, uploads in the last hour. Lets an admin see
+the health of every rack in the fleet from GetCondor's dashboard,
+without connecting to any individual rack over SSH.
+
+This is intentionally separate from telemetry: telemetry is about
+where the aircraft is; heartbeat is about whether the agent itself
+is alive and working.
+"""
+
+import logging
+import os
+import shutil
+import time
+from datetime import datetime, timezone
+
+import requests
+
+import state
+
+logger = logging.getLogger("heartbeat")
+
+GETCONDOR_API_URL = os.getenv("GETCONDOR_API_URL", "https://getcondor.win").rstrip("/")
+DRONE_ID = os.getenv("DRONE_ID", "UNKNOWN")
+MQTT_TOKEN = os.getenv("MQTT_TOKEN", "")
+HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("HEARTBEAT_INTERVAL_SECONDS", "300"))
+
+HEARTBEAT_URL_PATH = "/drones/heartbeat"  # TODO: confirm against real backend route
+
+_started_at = time.time()
+
+
+def _disk_free_gb(path: str) -> float:
+    try:
+        usage = shutil.disk_usage(path)
+        return round(usage.free / (1024 ** 3), 1)
+    except OSError:
+        return -1.0
+
+
+def _build_payload() -> dict:
+    last_upload = state.get_last_upload_time()
+    return {
+        "drone_id": DRONE_ID,
+        "token": MQTT_TOKEN,
+        "reported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "uptime_seconds": int(time.time() - _started_at),
+        "disk_free_gb": _disk_free_gb(os.getenv("MEDIA_WATCH_DIR", "/data/watch")),
+        "last_upload_at": last_upload,
+        "uploads_last_hour": state.count_uploaded_last_hour(),
+    }
+
+
+def run() -> None:
+    logger.info("heartbeat starting -- drone_id=%s, interval=%ds", DRONE_ID, HEARTBEAT_INTERVAL_SECONDS)
+    while True:
+        try:
+            payload = _build_payload()
+            resp = requests.post(
+                f"{GETCONDOR_API_URL}{HEARTBEAT_URL_PATH}", json=payload, timeout=10
+            )
+            resp.raise_for_status()
+            logger.info("heartbeat sent OK")
+        except requests.RequestException as exc:
+            logger.warning("heartbeat failed (will retry next interval): %s", exc)
+        except Exception:
+            logger.exception("unexpected error building/sending heartbeat")
+
+        time.sleep(HEARTBEAT_INTERVAL_SECONDS)

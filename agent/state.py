@@ -59,3 +59,28 @@ def mark_uploaded(path: str, size: int, media_type: str) -> None:
             (path, size, media_type),
         )
         conn.commit()
+
+
+def get_last_upload_time():
+    """Returns the timestamp of the most recent successful upload, or
+    None if nothing has been uploaded yet. Used by the heartbeat to
+    report freshness -- lets an admin see 'last upload: 2 minutes ago'
+    without connecting to the rack directly."""
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT MAX(uploaded_at) FROM uploaded_files"
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+
+def count_uploaded_last_hour():
+    """Returns how many files were uploaded in the last hour. A sudden
+    drop to 0 during an active mission is a useful signal something's
+    wrong, even before checking logs."""
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM uploaded_files WHERE uploaded_at >= datetime('now', '-1 hour')"
+        ).fetchone()
+        return row[0] if row else 0
