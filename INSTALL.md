@@ -103,9 +103,14 @@ Likely cause: wrong path in config/.env, or folder not mounted into the
 container -- check docker-compose.yml volumes.
 
 Symptom: files never upload, no error logged
-Likely cause: filename doesn't match the expected timestamp pattern, or
-GPS is outside the hardcoded Portugal range in geotiff.py -- check
-agent/photo.py and agent/geotiff.py logs.
+Likely cause: filename doesn't match the expected timestamp pattern --
+check agent/photo.py and agent/geotiff.py logs. GPS validity is NOT
+checked by the rack agent -- it uploads whatever coordinates it reads
+(or none) and lets GetCondor's backend decide whether the position is
+plausible (see drone-platform's isPlausibleCoordinate). This is
+intentional: keeping the geographic bounds check in one place (the
+backend) avoids the rack and backend silently drifting out of sync if
+the allowed region ever changes.
 
 Symptom: upload fails with 403
 Likely cause: wrong or expired MQTT_TOKEN, or plan restriction on that
