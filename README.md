@@ -12,7 +12,15 @@ optionally, a UDP port for live telemetry.
 
 - Watches MEDIA_WATCH_DIR for new photos, videos, and spectral GeoTIFF
   zips, and uploads each one to GetCondor as soon as it appears
-  (polling-based, not inotify -- see agent/watcher.py for why).
+  (polling-based, not inotify -- see agent/watcher.py for why). A file
+  is only uploaded once its mtime has been stable for at least 2x the
+  scan interval, so a still-being-written file is never uploaded
+  half-finished. Verified end-to-end against a real local backend:
+  photo and video uploads both detected, uploaded, and correctly
+  deduplicated on subsequent scans.
+- Reports the running agent's short git commit hash (agent_version) in
+  every heartbeat, so an admin can see exactly which code version each
+  rack is running from GetCondor's fleet panel, without SSH access.
 - Extracts capture time and GPS from standard EXIF/video metadata when
   the file doesn't carry richer metadata of its own.
 - Reports a periodic heartbeat (uptime, disk free, last upload per
@@ -53,6 +61,9 @@ config/.env is gitignored -- never commit real tokens.
 
 ## Structure
 
+- agent/main.py -- entry point: starts heartbeat (background thread),
+  telemetry (background thread, if enabled), and the watcher (main
+  thread, auto-restarted if it ever dies unexpectedly)
 - agent/watcher.py -- polls MEDIA_WATCH_DIR, dispatches new files by extension
 - agent/photo.py / agent/video.py -- extract capture time, GPS, heading from each file
 - agent/geotiff.py -- unpacks spectral zips, converts to COG, extracts fire perimeter
