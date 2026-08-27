@@ -50,13 +50,32 @@ Save and exit (Ctrl+O, Enter, Ctrl+X in nano).
 
 Do not commit this file. It's already in .gitignore.
 
-## 5. Verify the watch folder exists and has the expected files
+## 5. Verify the watch folder exists and has the expected structure
+
+MEDIA_WATCH_DIR must contain exactly 3 subfolders, matching Shamrock's
+real naming (same as what shamrock-adc receives via rsync/FTP -- see
+agent/pathinfo.py for the parsing logic):
+
+REPLACE_WITH_REAL_PATH/photos/Fotos/{month}/{day}/{mission}/OscarNN/
+REPLACE_WITH_REAL_PATH/videos/Videos/{month}/{day}/{mission}/OscarNN/
+REPLACE_WITH_REAL_PATH/spectral/Multiespectal/{month}/{day}/{mission}/OscarNN/SCA/...
 
 ls -la REPLACE_WITH_REAL_PATH
 
-If it doesn't exist yet, either create it or fix the path in config/.env
-before continuing -- the agent will just log a warning and do nothing
-if the folder is missing.
+You should see photos/, videos/, and spectral/ (lowercase) at the top
+level. If the real folder names differ from this on a given rack, set
+PHOTOS_SUBDIR / VIDEOS_SUBDIR / SPECTRAL_SUBDIR in config/.env instead
+of renaming folders on disk.
+
+If MEDIA_WATCH_DIR doesn't exist yet, either create it or fix the path
+in config/.env before continuing -- the agent will just log a warning
+and do nothing if the folder is missing. A file that exists but isn't
+under one of the 3 known subfolders is silently ignored (not an error
+-- it's treated as unrelated to the pipeline).
+
+Note: docker-compose.yml mounts MEDIA_WATCH_DIR (the real host path)
+read-only into the container at /data/watch -- the agent's own logs
+and config always refer to /data/watch, not your host path.
 
 ## 6. Start the agent
 
@@ -68,11 +87,15 @@ docker logs -f getcondor-rack-agent
 
 You should see:
 
-getcondor-rack-agent starting for drone_id=OSCAR01
-watcher starting -- folder: /data/watch, interval: 10s
+getcondor-rack-agent arrancando para drone_id=OSCAR01
+heartbeat starting -- drone_id=OSCAR01, interval=300s
+watcher starting -- folder: /data/watch, scan interval: 10s, stability window: 20s
 
-Drop a test photo into the watch folder and confirm it logs "upload OK"
-within one scan interval.
+Drop a test photo into the correct subfolder (photos/Fotos/.../OscarNN/,
+following the real naming) and confirm it logs "archivo estable
+detectado" followed by "upload OK" -- allow up to ~2x the scan interval
+for the stability check to pass (a file must sit unmodified for that
+long before it's considered done writing).
 
 ## 8. Confirm it appears in GetCondor
 
@@ -114,7 +137,20 @@ the allowed region ever changes.
 
 Symptom: upload fails with 403
 Likely cause: wrong or expired MQTT_TOKEN, or plan restriction on that
-drone_id -- confirm the token in GetCondor's admin panel.
+drone_id -- confirm the token in GetCondor's admin panel. Note: after a
+403, the agent marks that exact file as a permanent failure and will
+never retry it again automatically, even after fixing the token --
+touch the file (or wait for it to be replaced with new content) to
+force a retry, or clear the permanent_failures table in the agent's
+sqlite state if you need to force a retry without touching the file.
+
+Symptom: a corrupt zip or geotiff-less zip logs an error once and then
+goes silent
+This is expected, not a bug: the agent retries a broken file exactly
+once, then marks it as a permanent failure and stops retrying (and
+logging about it) forever, to avoid filling the disk with the same
+error every scan cycle. Check update.log or the agent's logs shortly
+after the file first appeared to see the original error.
 
 Symptom: telemetry never uploads, no packets logged even in raw mode
 Likely cause: wrong TELEMETRY_UDP_PORT, or a firewall on the rack
