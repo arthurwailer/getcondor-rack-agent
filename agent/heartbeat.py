@@ -33,11 +33,27 @@ _started_at = time.time()
 
 
 def _resolve_agent_version() -> str:
-    """Short git commit hash of the code actually running -- resolved once
-    at import time, not on every heartbeat, since it never changes for the
-    life of the process (update-and-start.sh only pulls new code on the
-    next boot, not while the agent is already running). Falls back to
-    "unknown" if git isn't available (e.g. a non-git deployment)."""
+    """Version of the code actually running -- resolved once at import
+    time, not on every heartbeat, since it never changes for the life of
+    the process (update-and-start.sh only pulls new code on the next
+    boot, not while the agent is already running).
+
+    Preferred source: the AGENT_VERSION env var, baked into the Docker
+    image at build time (see Dockerfile's ARG/ENV AGENT_VERSION and
+    docker-compose.yml's build.args -- update-and-start.sh computes it
+    via `git rev-parse --short HEAD` on the host, where .git actually
+    exists, right before `docker compose up -d --build`). The running
+    container has no .git directory and no git binary, so calling git
+    from inside the container would always fail -- this was tried and
+    confirmed broken before switching to the build-arg approach.
+
+    Fallback: git rev-parse directly, for the case where the agent runs
+    outside Docker (e.g. local development/testing) and .git is right
+    there next to the code. Falls back to "unknown" if neither works."""
+    env_version = os.getenv("AGENT_VERSION", "").strip()
+    if env_version and env_version != "unknown":
+        return env_version
+
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],

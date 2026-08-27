@@ -1,6 +1,9 @@
 services:
   rack-agent:
-    build: .
+    build:
+      context: .
+      args:
+        AGENT_VERSION: ${AGENT_VERSION:-unknown}
     image: getcondor-rack-agent:latest
     container_name: getcondor-rack-agent
     restart: always

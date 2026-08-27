@@ -1,5 +1,15 @@
 FROM python:3.11-slim
 
+# Version baked in at build time (see AGENT_VERSION in
+# agent/heartbeat.py for why: no git binary or .git dir exists inside
+# the running container, so the version has to come from the outside,
+# computed on the host where .git is real -- update-and-start.sh sets
+# this via `docker compose build --build-arg AGENT_VERSION=$(git
+# rev-parse --short HEAD)`, wired through docker-compose.yml's
+# build.args).
+ARG AGENT_VERSION=unknown
+ENV AGENT_VERSION=$AGENT_VERSION
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
