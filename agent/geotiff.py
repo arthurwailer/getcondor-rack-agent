@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+import state
 from uploader import upload_file
 
 logger = logging.getLogger("geotiff")
@@ -27,15 +28,25 @@ def extract_geotiff(zip_path: Path) -> Optional[Path]:
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(tmp_dir)
     except zipfile.BadZipFile:
-        logger.error("archivo no es un zip valido: %s", zip_path)
+        logger.error("archivo no es un zip valido (permanente, no se reintentara): %s", zip_path)
+        _mark_permanent(zip_path, "bad_zip")
         return None
 
     for candidate in tmp_dir.rglob("*"):
         if candidate.suffix.lower() in GEOTIFF_EXTENSIONS:
             return candidate
 
-    logger.warning("no se encontro GeoTIFF dentro de %s", zip_path)
+    logger.warning("no se encontro GeoTIFF dentro de %s (permanente, no se reintentara)", zip_path)
+    _mark_permanent(zip_path, "no_geotiff_in_zip")
     return None
+
+
+def _mark_permanent(zip_path: Path, reason: str) -> None:
+    try:
+        size = zip_path.stat().st_size
+        state.mark_permanent_failure(str(zip_path), size, reason)
+    except OSError:
+        logger.warning("no se pudo registrar falla permanente para %s", zip_path)
 
 
 def process_geotiff_zip(zip_path: Path, mission_id: str = "") -> bool:

@@ -97,3 +97,49 @@ def get_last_upload_time_by_type():
             "SELECT media_type, MAX(uploaded_at) FROM uploaded_files GROUP BY media_type"
         ).fetchall()
         return {media_type: ts for media_type, ts in rows if ts}
+
+
+def _ensure_failures_table() -> None:
+    conn = _get_conn()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS permanent_failures (
+            path TEXT PRIMARY KEY,
+            size INTEGER NOT NULL,
+            reason TEXT,
+            failed_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.commit()
+
+
+def mark_permanent_failure(path: str, size: int, reason: str = "") -> None:
+    """Registra que este archivo (ruta + tamano) nunca debe reintentarse
+    -- ej. un zip corrupto que nunca dejara de estarlo, o un rechazo 403
+    del servidor (plan restringido, token invalido para ese drone_id).
+    Sin esto, el watcher reintentaria el mismo archivo roto en cada
+    ciclo de escaneo para siempre, generando logs y trabajo inutil.
+
+    Se distingue por tamano igual que is_uploaded/mark_uploaded: si el
+    archivo se sobreescribe con contenido distinto bajo el mismo nombre
+    (ej. una nueva captura reusa el mismo path), se reintenta en vez de
+    asumir que sigue siendo el mismo archivo roto de antes."""
+    with _lock:
+        _ensure_failures_table()
+        conn = _get_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO permanent_failures (path, size, reason) VALUES (?, ?, ?)",
+            (path, size, reason),
+        )
+        conn.commit()
+
+
+def is_permanent_failure(path: str, size: int) -> bool:
+    with _lock:
+        _ensure_failures_table()
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT size FROM permanent_failures WHERE path = ?", (path,)
+        ).fetchone()
+        return row is not None and row[0] == size

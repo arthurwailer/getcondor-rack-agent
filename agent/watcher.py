@@ -31,8 +31,9 @@ import time
 import logging
 from pathlib import Path
 
+import pathinfo
 import state
-from uploader import upload_file, media_type_for
+from uploader import upload_file
 from geotiff import process_geotiff_zip
 
 logger = logging.getLogger("watcher")
@@ -47,35 +48,20 @@ SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "10"))
 STABILITY_WINDOW_SECONDS = max(SCAN_INTERVAL_SECONDS * 2, 10)
 
 
-def handle_new_file(path: Path, mission_id: str = "") -> bool:
-    """Procesa un solo archivo. Devuelve True si se subio (o no aplicaba
-    subir, ej. extension desconocida), False si el upload fallo -- el
-    llamador decide si eso es motivo de log adicional."""
-    media_type = media_type_for(path)
-
-    if media_type is None:
-        logger.debug("ignorado (extension desconocida): %s", path.name)
-        return True
-
-    logger.info("archivo estable detectado: %s (%s)", path.name, media_type)
+def handle_new_file(path: Path, media_type: str, mission_id: str = "") -> bool:
+    """Procesa un solo archivo, ya con media_type/mission_id resueltos por
+    pathinfo (segun la subcarpeta raiz y la posicion de la carpeta de la
+    aeronave en el path -- ver pathinfo.py). Devuelve True si se subio,
+    False si el upload fallo -- el llamador decide si eso es motivo de
+    log adicional."""
+    logger.info(
+        "archivo estable detectado: %s (%s, mission=%s)",
+        path.name, media_type, mission_id or "?",
+    )
 
     if media_type == "GEOTIFF" and path.suffix.lower() == ".zip":
-        success = process_geotiff_zip(path, mission_id=mission_id)
-    else:
-        success = upload_file(path, media_type=media_type, mission_id=mission_id)
-
-    if success:
-        try:
-            size = path.stat().st_size
-            state.mark_uploaded(str(path), size, media_type)
-        except OSError:
-            # El archivo pudo haber sido movido/borrado externamente entre
-            # el upload y este stat -- el upload ya quedo registrado del
-            # lado del servidor, asi que no se reintenta; si reaparece se
-            # volveria a subir, lo cual es preferible a perderlo del todo.
-            logger.warning("no se pudo confirmar tamano final de %s tras upload", path.name)
-
-    return success
+        return process_geotiff_zip(path, mission_id=mission_id)
+    return upload_file(path, media_type=media_type, mission_id=mission_id)
 
 
 def _is_stable(path: Path) -> bool:
@@ -105,6 +91,13 @@ def _scan_once() -> None:
         # excepcion inesperada en el upload) nunca debe frenar el resto
         # del lote ni el proximo ciclo de escaneo.
         try:
+            info = pathinfo.resolve(path, WATCH_DIR)
+            if info.media_type is None:
+                # No cae bajo ninguna de las 3 raices conocidas
+                # (photos/videos/spectral) -- probablemente un archivo
+                # temporal o ajeno al pipeline, se ignora en silencio.
+                continue
+
             if not _is_stable(path):
                 continue
 
@@ -116,7 +109,22 @@ def _scan_once() -> None:
             if state.is_uploaded(str(path), size):
                 continue
 
-            handle_new_file(path)
+            if state.is_permanent_failure(str(path), size):
+                # Ya se determino antes que este archivo nunca se va a
+                # poder subir (zip corrupto, sin GeoTIFF adentro, 403 del
+                # servidor) -- se ignora en silencio en vez de reintentar
+                # (y loguear el mismo error) en cada ciclo de escaneo para
+                # siempre.
+                continue
+
+            success = handle_new_file(path, info.media_type, mission_id=info.mission_id)
+            if not success:
+                continue
+
+            try:
+                state.mark_uploaded(str(path), size, info.media_type)
+            except OSError:
+                logger.warning("no se pudo registrar dedup para %s", path.name)
 
         except Exception:
             logger.exception("error inesperado procesando %s, continuando con el resto", path)

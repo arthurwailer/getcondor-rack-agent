@@ -15,6 +15,8 @@ from typing import Optional
 
 import requests
 
+import state
+
 logger = logging.getLogger("uploader")
 
 GETCONDOR_API_URL = os.getenv("GETCONDOR_API_URL", "https://getcondor.win").rstrip("/")
@@ -80,10 +82,18 @@ def upload_file(
                 resp = requests.post(url, data=data, files=files, timeout=60)
 
             if resp.status_code == 403:
-                # plan_restricted u otro rechazo definitivo: no tiene sentido reintentar
+                # plan_restricted u otro rechazo definitivo: no tiene sentido
+                # reintentar. Se marca como falla permanente para que el
+                # watcher deje de re-listar y re-intentar este mismo archivo
+                # en cada ciclo de escaneo.
                 logger.error(
-                    "upload rechazado (403) para %s: %s", path.name, resp.text
+                    "upload rechazado (403, permanente, no se reintentara) para %s: %s",
+                    path.name, resp.text,
                 )
+                try:
+                    state.mark_permanent_failure(str(path), path.stat().st_size, "403_forbidden")
+                except OSError:
+                    logger.warning("no se pudo registrar falla permanente para %s", path.name)
                 return False
 
             resp.raise_for_status()
