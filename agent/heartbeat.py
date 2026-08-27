@@ -12,6 +12,7 @@ is alive and working.
 import logging
 import os
 import shutil
+import subprocess
 import time
 from datetime import datetime, timezone
 
@@ -31,6 +32,28 @@ HEARTBEAT_URL_PATH = "/drones/heartbeat"  # TODO: confirm against real backend r
 _started_at = time.time()
 
 
+def _resolve_agent_version() -> str:
+    """Short git commit hash of the code actually running -- resolved once
+    at import time, not on every heartbeat, since it never changes for the
+    life of the process (update-and-start.sh only pulls new code on the
+    next boot, not while the agent is already running). Falls back to
+    "unknown" if git isn't available (e.g. a non-git deployment)."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        logger.warning("could not resolve agent version from git", exc_info=True)
+    return "unknown"
+
+
+AGENT_VERSION = _resolve_agent_version()
+
+
 def _disk_free_gb(path: str) -> float:
     try:
         usage = shutil.disk_usage(path)
@@ -45,6 +68,7 @@ def _build_payload() -> dict:
     return {
         "drone_id": DRONE_ID,
         "token": MQTT_TOKEN,
+        "agent_version": AGENT_VERSION,
         "reported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "uptime_seconds": int(time.time() - _started_at),
         "disk_free_gb": _disk_free_gb(os.getenv("MEDIA_WATCH_DIR", "/data/watch")),
