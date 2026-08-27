@@ -30,9 +30,14 @@ import os
 import time
 import logging
 from pathlib import Path
+from typing import Optional
+
+import json
 
 import pathinfo
+import photo
 import state
+import video
 from uploader import upload_file
 from geotiff import process_geotiff_zip
 
@@ -48,17 +53,95 @@ SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "10"))
 STABILITY_WINDOW_SECONDS = max(SCAN_INTERVAL_SECONDS * 2, 10)
 
 
+def _captured_at_iso(dt) -> Optional[str]:
+    if dt is None:
+        return None
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _metadata_json(meta) -> Optional[str]:
+    if not meta:
+        return None
+    try:
+        return json.dumps(meta)
+    except (TypeError, ValueError):
+        logger.warning("metadata no serializable a JSON, se omite")
+        return None
+
+
+def _handle_photo(path: Path, mission_id: str) -> bool:
+    """mission_id viene de pathinfo (fuente unica de verdad sobre
+    estructura de carpetas -- ver watcher.py/_scan_once), no del propio
+    photo.py, que tiene su propia copia de la misma logica de parseo de
+    ruta para cuando corre fuera de este watcher (ej. scripts de
+    migracion historicos). Se ignora deliberadamente el mission_id que
+    build_photo_task calcularia por su cuenta, para no tener 2 fuentes
+    de verdad que puedan divergir."""
+    task = photo.build_photo_task(path)
+    if task is None:
+        # drone_id o timestamp no se pudieron determinar del nombre del
+        # archivo -- se sube igual con lo que sabemos por la carpeta
+        # (media_type, mission_id), sin GPS/captured_at/metadata, en vez
+        # de descartar el archivo por completo.
+        logger.warning("no se pudo enriquecer %s con datos EXIF/nombre, subiendo sin ellos", path.name)
+        return upload_file(path, media_type="PHOTO", mission_id=mission_id)
+
+    return upload_file(
+        path, media_type="PHOTO", mission_id=mission_id,
+        latitude=task.latitude, longitude=task.longitude,
+        altitude=task.altitude, heading=task.heading,
+        captured_at=_captured_at_iso(task.captured_at),
+        metadata=_metadata_json(task.metadata),
+    )
+
+
+def _handle_video(path: Path, mission_id: str) -> bool:
+    """Mismo criterio que _handle_photo sobre mission_id: se usa el de
+    pathinfo, no el que build_video_task recalcularia."""
+    task = video.build_video_task(path)
+    if task is None:
+        logger.warning("no se pudo enriquecer %s con datos de sidecar/nombre, subiendo sin ellos", path.name)
+        return upload_file(path, media_type="VIDEO", mission_id=mission_id)
+
+    try:
+        success = upload_file(
+            task.upload_path, media_type="VIDEO", mission_id=mission_id,
+            latitude=task.latitude, longitude=task.longitude,
+            altitude=task.altitude, heading=task.heading,
+            captured_at=_captured_at_iso(task.captured_at),
+            metadata=_metadata_json(task.metadata),
+        )
+    finally:
+        # El .mp4 remuxeado es un archivo temporal fuera de MEDIA_WATCH_DIR
+        # (vive en /tmp) -- se limpia siempre, haya salido bien o mal el
+        # upload, para no acumular basura en el disco del rack con el
+        # tiempo. El .ts original (bajo MEDIA_WATCH_DIR) nunca se toca --
+        # eso es responsabilidad de quien lo genera, no de este agente.
+        if task.is_temp_upload_path:
+            try:
+                task.upload_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("no se pudo limpiar archivo temporal %s", task.upload_path)
+
+    return success
+
+
 def handle_new_file(path: Path, media_type: str, mission_id: str = "") -> bool:
     """Procesa un solo archivo, ya con media_type/mission_id resueltos por
     pathinfo (segun la subcarpeta raiz y la posicion de la carpeta de la
-    aeronave en el path -- ver pathinfo.py). Devuelve True si se subio,
-    False si el upload fallo -- el llamador decide si eso es motivo de
-    log adicional."""
+    aeronave en el path -- ver pathinfo.py). Para PHOTO/VIDEO, enriquece
+    con GPS/timestamp/metadata real via photo.py/video.py antes de subir.
+    Devuelve True si se subio, False si el upload fallo -- el llamador
+    decide si eso es motivo de log adicional."""
     logger.info(
         "archivo estable detectado: %s (%s, mission=%s)",
         path.name, media_type, mission_id or "?",
     )
 
+    if media_type == "PHOTO":
+        return _handle_photo(path, mission_id)
+    if media_type == "VIDEO":
+        return _handle_video(path, mission_id)
     if media_type == "GEOTIFF" and path.suffix.lower() == ".zip":
         return process_geotiff_zip(path, mission_id=mission_id)
     return upload_file(path, media_type=media_type, mission_id=mission_id)

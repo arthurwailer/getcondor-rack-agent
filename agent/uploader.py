@@ -52,6 +52,8 @@ def upload_file(
     longitude: Optional[float] = None,
     altitude: Optional[float] = None,
     heading: Optional[float] = None,
+    captured_at: Optional[str] = None,
+    metadata: Optional[str] = None,
 ) -> bool:
     """
     Sube un archivo a /media/upload con retry + backoff exponencial.
@@ -74,6 +76,10 @@ def upload_file(
         data["altitude"] = str(altitude)
     if heading is not None:
         data["heading"] = str(heading)
+    if captured_at is not None:
+        data["captured_at"] = captured_at
+    if metadata is not None:
+        data["metadata"] = metadata
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -81,17 +87,20 @@ def upload_file(
                 files = {"file": (path.name, f)}
                 resp = requests.post(url, data=data, files=files, timeout=60)
 
-            if resp.status_code == 403:
-                # plan_restricted u otro rechazo definitivo: no tiene sentido
-                # reintentar. Se marca como falla permanente para que el
-                # watcher deje de re-listar y re-intentar este mismo archivo
-                # en cada ciclo de escaneo.
+            if resp.status_code in (400, 403):
+                # 400 (payload malformado -- ej. captured_at con formato
+                # invalido) y 403 (plan_restricted, token invalido para
+                # ese drone) son ambos rechazos definitivos: reintentar no
+                # va a arreglar un dato mal formado ni un permiso denegado.
+                # Se marca como falla permanente para que el watcher deje
+                # de re-listar y re-intentar este mismo archivo en cada
+                # ciclo de escaneo para siempre.
                 logger.error(
-                    "upload rechazado (403, permanente, no se reintentara) para %s: %s",
-                    path.name, resp.text,
+                    "upload rechazado (%d, permanente, no se reintentara) para %s: %s",
+                    resp.status_code, path.name, resp.text,
                 )
                 try:
-                    state.mark_permanent_failure(str(path), path.stat().st_size, "403_forbidden")
+                    state.mark_permanent_failure(str(path), path.stat().st_size, f"{resp.status_code}_rejected")
                 except OSError:
                     logger.warning("no se pudo registrar falla permanente para %s", path.name)
                 return False
