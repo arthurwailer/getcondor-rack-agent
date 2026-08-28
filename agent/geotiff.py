@@ -37,6 +37,15 @@ SPECTRAL_TIFF_PATTERNS = {
     "KELVIN": re.compile(r"^LWIR_QuickMosaic_100xKelvin", re.IGNORECASE),
 }
 
+# El contorno de fuego (shapefile vectorial dentro de un zip anidado) se
+# sube TAL CUAL, sin procesar ni convertir -- procesarlo (ogr2ogr, calculo
+# de hectareas) requeriria GDAL en el Dockerfile, no probado, no es
+# necesario para no perder el dato: subir el zip crudo como
+# media_type=FIRE_PERIMETER lo deja disponible en GetCondor para
+# procesarlo despues con calma, sin arriesgar nada la noche antes de un
+# vuelo real.
+FIRE_CONTOUR_PATTERN = re.compile(r"^fire_contours", re.IGNORECASE)
+
 # Las operaciones de Shamrock son en Portugal continental -- se rechaza
 # cualquier punto claramente fuera de rango (ej. datos de calibracion con
 # coordenadas de otro continente cargadas por error) en vez de subirlo
@@ -74,27 +83,36 @@ def _read_metadata_dat(zf: zipfile.ZipFile, zip_path: Path) -> dict:
         return {}
 
 
-class SpectralTiffTask(NamedTuple):
-    """Un tiff individual dentro del zip, listo para extraer y subir."""
+class SpectralUploadTask(NamedTuple):
+    """Un archivo individual dentro del zip espectral, listo para
+    extraer y subir -- ya sea un tiff de sensor (media_type=GEOTIFF,
+    sensor=RGBN/LWIR/KELVIN) o el contorno de fuego crudo
+    (media_type=FIRE_PERIMETER, sensor=None, sin procesar)."""
     zip_member: str
-    sensor: str
+    media_type: str
+    sensor: Optional[str]
     filename: str
 
 
-def _find_sensor_tiffs(zf: zipfile.ZipFile) -> List[SpectralTiffTask]:
+def _find_sensor_tiffs(zf: zipfile.ZipFile) -> List[SpectralUploadTask]:
     tasks = []
     for member in zf.namelist():
-        if not member.lower().endswith((".tif", ".tiff")):
-            continue
         name = Path(member).name
-        sensor = next(
-            (tag for tag, pat in SPECTRAL_TIFF_PATTERNS.items() if pat.search(name)),
-            None,
-        )
-        if sensor:
-            tasks.append(SpectralTiffTask(zip_member=member, sensor=sensor, filename=name))
-        else:
-            logger.warning("tiff de sensor desconocido ignorado dentro de %s: %s", zf.filename, name)
+
+        if member.lower().endswith((".tif", ".tiff")):
+            sensor = next(
+                (tag for tag, pat in SPECTRAL_TIFF_PATTERNS.items() if pat.search(name)),
+                None,
+            )
+            if sensor:
+                tasks.append(SpectralUploadTask(zip_member=member, media_type="GEOTIFF", sensor=sensor, filename=name))
+            else:
+                logger.warning("tiff de sensor desconocido ignorado dentro de %s: %s", zf.filename, name)
+            continue
+
+        if member.lower().endswith(".zip") and FIRE_CONTOUR_PATTERN.search(name):
+            tasks.append(SpectralUploadTask(zip_member=member, media_type="FIRE_PERIMETER", sensor=None, filename=name))
+
     return tasks
 
 
@@ -135,10 +153,10 @@ def process_geotiff_zip(zip_path: Path, mission_id: str = "") -> bool:
                 )
                 lat, lon = None, None
 
-        tiff_tasks = _find_sensor_tiffs(zf)
-        if not tiff_tasks:
-            logger.warning("%s no contiene tiffs de sensor conocido (permanente, no se reintentara)", zip_path.name)
-            _mark_permanent(zip_path, "no_known_sensor_tiff")
+        upload_tasks = _find_sensor_tiffs(zf)
+        if not upload_tasks:
+            logger.warning("%s no contiene tiffs de sensor conocido ni contorno de fuego (permanente, no se reintentara)", zip_path.name)
+            _mark_permanent(zip_path, "no_known_content")
             return False
 
         resolved_mission_id = mission_id or (find_mission_label(zip_path, f"Oscar{drone_id[-2:]}") or "")
@@ -147,17 +165,18 @@ def process_geotiff_zip(zip_path: Path, mission_id: str = "") -> bool:
 
         all_ok = True
         any_permanent = False
-        for task in tiff_tasks:
+        for task in upload_tasks:
             extracted_path = None
             try:
                 extracted_path = _extract_member_to_tmp(zf, task.zip_member, task.filename)
                 task_metadata = dict(meta)
-                task_metadata["sensor"] = task.sensor
+                if task.sensor is not None:
+                    task_metadata["sensor"] = task.sensor
                 task_metadata["source_zip"] = zip_path.name
 
                 extracted_size = extracted_path.stat().st_size
                 success = upload_file(
-                    extracted_path, media_type="GEOTIFF", mission_id=resolved_mission_id,
+                    extracted_path, media_type=task.media_type, mission_id=resolved_mission_id,
                     latitude=lat, longitude=lon, altitude=alt,
                     metadata=json.dumps(task_metadata),
                 )
