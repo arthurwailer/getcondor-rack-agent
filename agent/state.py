@@ -143,3 +143,41 @@ def is_permanent_failure(path: str, size: int) -> bool:
             "SELECT size FROM permanent_failures WHERE path = ?", (path,)
         ).fetchone()
         return row is not None and row[0] == size
+
+
+def _ensure_agent_meta_table() -> None:
+    conn = _get_conn()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+    conn.commit()
+
+
+def is_primed() -> bool:
+    """True si el priming inicial (marcar el historico existente como
+    'ya visto' sin subirlo) ya se ejecuto alguna vez para este rack.
+    Persiste en el mismo volumen sqlite que el dedup normal, asi que
+    sobrevive reinicios del rack (encendido/apagado con cada vuelo) --
+    solo se ejecuta una vez en la vida del rack, no en cada arranque."""
+    with _lock:
+        _ensure_agent_meta_table()
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT value FROM agent_meta WHERE key = 'primed'"
+        ).fetchone()
+        return row is not None and row[0] == "true"
+
+
+def mark_primed() -> None:
+    with _lock:
+        _ensure_agent_meta_table()
+        conn = _get_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO agent_meta (key, value) VALUES ('primed', 'true')"
+        )
+        conn.commit()

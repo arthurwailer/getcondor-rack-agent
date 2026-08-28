@@ -213,11 +213,64 @@ def _scan_once() -> None:
             logger.exception("error inesperado procesando %s, continuando con el resto", path)
 
 
+def _prime_existing_files() -> None:
+    """Se ejecuta una sola vez en la vida del rack (ver state.is_primed),
+    la primera vez que el agente arranca contra una carpeta que ya tiene
+    meses de archivos migrados a mano (via migrate_ftp_to_getcondor.py).
+    Marca cada archivo existente como "ya subido" en el dedup local, SIN
+    subir nada -- evita que el primer arranque real intente re-subir todo
+    el historico. Cualquier archivo genuinamente nuevo que aparezca
+    despues de esto sigue el flujo normal de _scan_once.
+
+    Automatico y sin intervencion manual a proposito: un paso separado
+    que alguien tiene que acordarse de correr antes de instalar es
+    exactamente el tipo de cosa que se olvida a las 6am en el rack --
+    esto corre solo, como parte del arranque normal del agente."""
+    if not WATCH_DIR.exists():
+        logger.info("priming: MEDIA_WATCH_DIR no existe todavia, nada que priming -- se marcara primed igual")
+        state.mark_primed()
+        return
+
+    try:
+        existing = [p for p in WATCH_DIR.rglob("*") if p.is_file()]
+    except OSError as exc:
+        logger.error("priming: no se pudo leer %s (%s) -- NO se marca primed, se reintentara en el proximo arranque", WATCH_DIR, exc)
+        return
+
+    marked = 0
+    for path in existing:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        try:
+            state.mark_uploaded(str(path), size, "PRIMED")
+            marked += 1
+        except OSError:
+            logger.warning("priming: no se pudo marcar %s", path)
+
+    state.mark_primed()
+    logger.info("priming completo: %d archivos existentes marcados como ya vistos (no se subieron)", marked)
+
+
 def run() -> None:
     logger.info(
         "watcher starting -- folder: %s, scan interval: %ds, stability window: %ds",
         WATCH_DIR, SCAN_INTERVAL_SECONDS, STABILITY_WINDOW_SECONDS,
     )
+
+    if not state.is_primed():
+        logger.info("primer arranque detectado -- iniciando priming del historico existente")
+        try:
+            _prime_existing_files()
+        except Exception:
+            # Si el priming falla de forma inesperada, NO se marca primed
+            # -- mejor reintentar el priming completo en el proximo
+            # arranque que arrancar el scan normal con un priming a medias
+            # (que dejaria algunos archivos viejos sin marcar, listos para
+            # subirse por error).
+            logger.exception("priming fallo de forma inesperada, se reintentara en el proximo arranque")
+
     while True:
         try:
             _scan_once()
