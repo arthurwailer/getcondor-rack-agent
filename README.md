@@ -10,19 +10,49 @@ optionally, a UDP port for live telemetry.
 
 ## What it does
 
-- Watches MEDIA_WATCH_DIR for new photos, videos, and spectral GeoTIFF
-  zips, and uploads each one to GetCondor as soon as it appears
-  (polling-based, not inotify -- see agent/watcher.py for why). A file
-  is only uploaded once its mtime has been stable for at least 2x the
-  scan interval, so a still-being-written file is never uploaded
-  half-finished. Verified end-to-end against a real local backend:
-  photo and video uploads both detected, uploaded, and correctly
-  deduplicated on subsequent scans.
-- Reports the running agent's short git commit hash (agent_version) in
-  every heartbeat, so an admin can see exactly which code version each
-  rack is running from GetCondor's fleet panel, without SSH access.
-- Extracts capture time and GPS from standard EXIF/video metadata when
-  the file doesn't carry richer metadata of its own.
+- Watches MEDIA_WATCH_DIR (3 fixed subfolders: photos/Fotos,
+  videos/Videos, spectral/Multiespectal, each nested by
+  month/day/mission/OscarNN -- same real folder structure used by
+  Shamrock-AddOn) for new files, and uploads each one to GetCondor as
+  soon as it appears (polling-based, not inotify -- see agent/watcher.py
+  for why). media_type is determined by which root subfolder a file is
+  under (more reliable than file extension), and mission_id/drone_id
+  are parsed from the path itself, reusing the exact same logic already
+  proven in production by migrate_ftp_to_getcondor.py. A file is only
+  uploaded once its mtime has been stable for at least 2x the scan
+  interval, so a still-being-written file is never uploaded
+  half-finished.
+- On its very first run ever against a given rack, automatically
+  "primes" the dedup state against whatever files already exist in
+  MEDIA_WATCH_DIR (typically months of history already migrated by
+  hand) -- marks them all as already-seen without uploading anything,
+  then proceeds normally. No manual step required before installing.
+- A file that permanently fails (corrupt zip, no known sensor inside,
+  or the server rejects it with 400/403 -- e.g. plan restricted, bad
+  payload) is retried exactly once, then marked permanently failed and
+  silently ignored forever after, instead of being retried and
+  re-logged on every scan cycle.
+- Photos and videos are enriched with real capture time, GPS, and
+  heading before upload -- from Shamrock-AddOn's EXIF UserComment
+  (photos) or .dat sidecar (videos) when present, falling back to
+  standard EXIF GPS tags otherwise. Videos are remuxed from .ts to
+  .mp4 (ffmpeg -c copy, no re-encoding) before upload, since most
+  browsers won't play raw MPEG-TS.
+- Spectral zips are unpacked and each sensor tiff (RGBN/LWIR/KELVIN,
+  identified by filename) is uploaded as an independent GEOTIFF record
+  with real GPS/altitude from metadata.dat and its sensor tagged in
+  metadata -- uploading each file separately (not the whole zip) means
+  a Starlink drop only loses the file in progress, not the whole batch.
+  The nested fire-perimeter contour (fire_contours_*.zip) is uploaded
+  as-is (unprocessed) as a FIRE_PERIMETER record, so the data isn't
+  lost even though COG conversion and contour processing (both would
+  need GDAL) aren't implemented yet.
+- Reports the running agent's version (short git commit hash, baked
+  into the Docker image at build time via update-and-start.sh -- the
+  running container has no git binary or .git directory, so it can't
+  resolve its own version at runtime) in every heartbeat, so an admin
+  can see exactly which code each rack is running from GetCondor's
+  fleet panel, without SSH access.
 - Reports a periodic heartbeat (uptime, disk free, last upload per
   media type) so the fleet status is visible in the GetCondor web
   panel without SSH-ing into any rack.
@@ -57,6 +87,14 @@ TELEMETRY_UDP_PORT=14550
 
 2. docker compose up -d --build
 
+Note: when started via update-and-start.sh (the normal path, see
+"Auto-start and auto-update on boot" in INSTALL.md), AGENT_VERSION is
+computed automatically from the current git commit and passed as a
+build arg. Running `docker compose up -d --build` directly (e.g. for
+manual testing) without exporting AGENT_VERSION first will build with
+version "unknown" -- harmless, just won't show a real version in the
+fleet panel's heartbeat.
+
 config/.env is gitignored -- never commit real tokens.
 
 ## Structure
@@ -64,11 +102,22 @@ config/.env is gitignored -- never commit real tokens.
 - agent/main.py -- entry point: starts heartbeat (background thread),
   telemetry (background thread, if enabled), and the watcher (main
   thread, auto-restarted if it ever dies unexpectedly)
-- agent/watcher.py -- polls MEDIA_WATCH_DIR, dispatches new files by extension
+- agent/watcher.py -- polls MEDIA_WATCH_DIR, determines media_type by
+  root subfolder (via pathinfo.py), enriches PHOTO/VIDEO via
+  photo.py/video.py before upload, handles first-run priming and
+  permanent-failure tracking
+- agent/pathinfo.py -- resolves media_type/mission_id/drone_id from a
+  file's path within the 3-subfolder structure, mirroring
+  migrate_ftp_to_getcondor.py's proven path-parsing logic
 - agent/photo.py / agent/video.py -- extract capture time, GPS, heading from each file
-- agent/geotiff.py -- unpacks spectral zips, converts to COG, extracts fire perimeter
+- agent/geotiff.py -- unpacks spectral zips: uploads each sensor tiff
+  (RGBN/LWIR/KELVIN) as an independent GEOTIFF, and the nested
+  fire-perimeter zip as-is (unprocessed) as FIRE_PERIMETER. No COG
+  conversion or contour processing yet (would need GDAL)
 - agent/uploader.py -- multipart upload to GetCondor with retry/backoff
-- agent/state.py -- SQLite dedup so restarts don't re-upload media
+- agent/state.py -- SQLite dedup so restarts don't re-upload media,
+  plus permanent-failure tracking (broken files aren't retried
+  forever) and the first-run priming marker
 - agent/heartbeat.py -- periodic fleet-status ping to GetCondor
 - agent/telemetry_orchestrator.py -- store-and-forward: reads samples
   from the configured source, writer thread persists them durably,
@@ -82,13 +131,12 @@ config/.env is gitignored -- never commit real tokens.
 
 ## Known limitations (being addressed)
 
-- agent/geotiff.py is intentionally minimal today: it unzips the
-  archive, uploads the first .tif/.tiff it finds as media_type=GEOTIFF,
-  and relies entirely on GetCondor's server-side TiTiler processing to
-  derive geographic bounds on upload. It does not extract GPS, capture
-  time, or sensor type from the file itself, and does not validate
-  coordinates against any region -- there is currently no
-  Portugal-specific restriction to remove.
+- agent/geotiff.py does not convert tiffs to COG (relies entirely on
+  GetCondor's server-side TiTiler processing to derive geographic
+  bounds on upload) and does not process the fire-perimeter contour
+  (uploads it as a raw, unprocessed zip) -- both would require adding
+  GDAL to the Dockerfile, deliberately deferred rather than adding an
+  untested heavy dependency the night before a real flight.
 - photo.py/video.py currently parse capture time via a filename
   regex tuned to Shamrock's naming convention (metaOSD.py). A rack
   with a different naming convention will silently fail to upload
