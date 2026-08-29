@@ -156,23 +156,38 @@ Symptom: telemetry never uploads, no packets logged even in raw mode
 Likely cause: wrong TELEMETRY_UDP_PORT, or a firewall on the rack
 blocking that UDP port -- confirm with tcpdump on the rack.
 
-## Reassigning a rack to a different aircraft
+## Reassigning a rack to a different aircraft (or fixing a wrong DRONE_ID)
 
 Racks get physically swapped between aircraft when there's a hardware
 issue. The aircraft identity (OSCAR01/02/03) never changes -- the rack
 just takes on whatever identity the aircraft it's currently installed
-in has. To move an already-configured rack to a different aircraft:
+in has. To move an already-configured rack to a different aircraft, or
+to fix a DRONE_ID/MQTT_TOKEN that was set up wrong:
 
 nano config/.env
-(change DRONE_ID to the aircraft this rack is now installed in)
+(change DRONE_ID and MQTT_TOKEN to the aircraft this rack is now
+installed in, or to the correct values)
 docker compose up -d --build
 
-To also wipe the local upload-dedup history (so the rack doesn't
-"remember" files from the aircraft it used to serve):
+Do NOT wipe the agent-state volume for this. The upload-dedup and
+priming state are keyed purely by file path + size (see
+agent/state.py: is_uploaded/mark_uploaded), never by drone_id or
+token -- changing DRONE_ID/MQTT_TOKEN and restarting is enough on its
+own. Any file the agent already knows about stays marked as seen
+(so it's never re-uploaded, avoiding a slow re-scan of the whole
+history); any genuinely new file uploads under whichever
+DRONE_ID/MQTT_TOKEN is in config/.env at the time it's picked up. If
+a heartbeat was sent under the wrong drone_id before the fix, it's
+harmless -- heartbeats carry no media, only fleet-status info like
+uptime and last-upload time.
 
-docker compose down
-docker volume rm getcondor-rack-agent_agent-state
-docker compose up -d --build
+Wiping the volume (`docker compose down && docker volume rm
+getcondor-rack-agent_agent-state && docker compose up -d --build`) is
+never required for a reassignment or a config fix. It's only useful to
+force a full re-check of the filesystem from scratch (e.g. after
+manually editing files on disk in a way the agent might have missed),
+which re-triggers priming and briefly re-scans everything without
+uploading anything already-marked.
 
 ## Auto-start and auto-update on boot
 

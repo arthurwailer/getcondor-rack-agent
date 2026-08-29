@@ -171,12 +171,10 @@ nano config/.env
 MQTT_TOKEN to that aircraft's real token)
 docker compose up -d --build
 
-To also wipe the local upload-dedup history (so the rack doesn't
-"remember" files from the aircraft it used to serve):
-
-docker compose down
-docker volume rm getcondor-rack-agent_agent-state
-docker compose up -d --build
+No need to wipe the agent-state volume for this -- dedup/priming state
+is keyed by file path + size, never by drone_id or token, so changing
+config/.env and restarting is enough on its own (see INSTALL.md's
+"Reassigning a rack" section for the full explanation).
 
 MEDIA_WATCH_DIR and TELEMETRY_UDP_PORT describe the physical rack
 (where its cabling and disk are), not the aircraft, so they normally
